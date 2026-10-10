@@ -14,7 +14,7 @@ from app.models import AiRun, EvidenceChunk
 from app.services.ai import client as ai_client
 from app.services.search import answers, embeddings
 from app.services.search.embeddings import EMBED_DIMENSIONS, to_bytes
-from app.services.search.indexing import index_evidence
+from app.services.search.indexing import index_evidence, split_into_chunks
 from tests.factories import make_case, make_evidence
 
 TOPICS = ["signal", "amber", "van", "hatchback", "ambulance", "injur", "fracture"]
@@ -105,6 +105,50 @@ def chunk_with(db, text: str) -> EvidenceChunk:
 # Indexing ---------------------------------------------------------------------
 
 
+def test_chunks_pack_whole_paragraphs_up_to_the_size():
+    text = "Para one is here.\n\nPara two.\n\n\nPara three is longer than that."
+    assert split_into_chunks(text, max_chars=40) == [
+        "Para one is here.\n\nPara two.",
+        "Para three is longer than that.",
+    ]
+    assert split_into_chunks(text) == [text]
+
+
+def test_long_paragraphs_split_on_sentences_then_spaces():
+    sentences = "First sentence here. Second sentence here. Third one."
+    assert split_into_chunks(sentences, max_chars=25) == [
+        "First sentence here.",
+        "Second sentence here.",
+        "Third one.",
+    ]
+    assert split_into_chunks("aaaa bbbb cccc dddd", max_chars=10) == ["aaaa bbbb", "cccc dddd"]
+    assert split_into_chunks("x" * 25, max_chars=10) == ["x" * 10, "x" * 10, "x" * 5]
+
+
+def test_chunks_are_exact_slices_of_the_text():
+    text = "  Heading\n \nA  line with   odd spacing.\nSame paragraph.\n\n\tLast one.  "
+    chunks = split_into_chunks(text, max_chars=30)
+    assert chunks == ["Heading", "A  line with   odd spacing.", "Same paragraph.\n\n\tLast one."]
+    positions = [text.index(chunk) for chunk in chunks]
+    assert positions == sorted(positions)
+    assert split_into_chunks(" \n\n ") == []
+
+
+def test_index_keeps_pages_apart_and_replaces_old_chunks(db):
+    case = make_case(db)
+    evidence = make_evidence(db, case)
+    chunks = index_evidence(db, evidence.id, ["Page one.\n\nStill page one.", "", "Page three."], paged=True)
+    db.commit()
+    assert [(c.ordinal, c.page, c.text) for c in chunks] == [
+        (0, 1, "Page one.\n\nStill page one."),
+        (1, 3, "Page three."),
+    ]
+    again = index_evidence(db, evidence.id, ["Not paged."])
+    db.commit()
+    assert [(c.ordinal, c.page, c.text) for c in again] == [(0, None, "Not paged.")]
+    assert db.scalars(select(EvidenceChunk.text)).all() == ["Not paged."]
+
+
 def test_index_without_a_key_stores_chunks_without_embeddings(db, case_files):
     chunks = db.scalars(select(EvidenceChunk).where(EvidenceChunk.evidence_id == case_files.statement.id)).all()
     assert chunks
@@ -116,7 +160,7 @@ def test_index_embeds_chunks_in_batches_as_float32(db, monkeypatch, use_gemini):
     fake = use_gemini()
     case = make_case(db)
     evidence = make_evidence(db, case)
-    chunks = index_evidence(db, evidence.id, ["One.\n\nTwo signal.\n\nThree van."])
+    chunks = index_evidence(db, evidence.id, ["One.", "Two signal.", "Three van."], paged=True)
     db.commit()
 
     calls = fake.models.calls("RETRIEVAL_DOCUMENT")
@@ -143,24 +187,27 @@ def test_index_keeps_the_chunks_when_embedding_fails(db, use_gemini):
 
 
 def test_search_ranks_by_keyword_without_a_key(client, db, case_files):
-    response = client.get(f"/api/cases/{case_files.case.id}/search", params={"q": "van hatchback"})
+    response = client.get(f"/api/cases/{case_files.case.id}/search", params={"q": "van strikes"})
     assert response.status_code == 200
     hits = response.json()
-    struck = chunk_with(db, "Van strikes")
-    assert [(hit["passage"][:20], hit["score"]) for hit in hits] == [
-        ("The hatchback's sign", 1.0),
-        ("16:10:03 Van strikes", 1.0),
-        ("16:09:58 Van moves o", 0.5),
-    ]
-    assert hits[1] == {
-        "chunk_id": struck.id,
+    cctv = chunk_with(db, "Van strikes")
+    assert hits[0] == {
+        "chunk_id": cctv.id,
         "evidence_id": case_files.cctv.id,
         "evidence_title": "CCTV log.txt",
         "page": None,
-        "passage": struck.text,
-        "score": 1.0,
+        "passage": CCTV_TEXT,
+        "score": 1.5,
     }
-    assert hits[0]["page"] == 1
+    assert [(hit["evidence_title"], hit["page"], hit["score"]) for hit in hits[1:]] == [
+        ("Statement - Anita Desai.pdf", 1, 0.5)
+    ]
+
+    hits = client.get(f"/api/cases/{case_files.case.id}/search", params={"q": "van hatchback"}).json()
+    assert [(hit["evidence_title"], hit["score"]) for hit in hits] == [
+        ("Statement - Anita Desai.pdf", 1.0),
+        ("CCTV log.txt", 1.0),
+    ]
 
 
 def test_keyword_search_matches_prefixes_and_the_whole_phrase(client, case_files):
@@ -188,7 +235,7 @@ def test_search_unknown_case_is_404(client):
 def test_search_returns_at_most_20_hits(client, db):
     case = make_case(db)
     evidence = make_evidence(db, case)
-    index_evidence(db, evidence.id, ["\n\n".join(f"Van sighting {i}." for i in range(25))])
+    index_evidence(db, evidence.id, [f"Van sighting {i}." for i in range(25)], paged=True)
     db.commit()
     assert len(client.get(f"/api/cases/{case.id}/search", params={"q": "van"}).json()) == 20
 
@@ -197,8 +244,8 @@ def test_search_embeds_missing_chunks_once_and_ranks_by_cosine(client, db, case_
     fake = use_gemini()
     hits = client.get(f"/api/cases/{case_files.case.id}/search", params={"q": "What colour was the signal?"}).json()
 
-    assert hits[0]["passage"].startswith("The hatchback's signal was amber")
-    assert len(hits) == 6  # every chunk of the case, none of the other case's
+    assert hits[0]["passage"] == STATEMENT_PAGES[0]
+    assert len(hits) == 4  # every chunk of the case, none of the other case's
     assert [hit["score"] for hit in hits] == sorted((hit["score"] for hit in hits), reverse=True)
     assert 0 < hits[0]["score"] <= 1
     documents = fake.models.calls("RETRIEVAL_DOCUMENT")
@@ -252,13 +299,11 @@ def test_ask_without_a_key_quotes_the_best_keyword_matches(client, db, case_file
         "Gemini is not configured, so this answer is keyword matching, not AI. "
         "The most relevant passages in this case's evidence are:\n"
         '1. CCTV log.txt: "16:10:03 Van strikes the hatchback on the near side."\n'
-        '2. Statement - Anita Desai.pdf: "The hatchback\'s signal was amber when it entered the junction."\n'
-        '3. CCTV log.txt: "16:09:58 Van moves off from the stop line."'
+        '2. Statement - Anita Desai.pdf: "The hatchback\'s signal was amber when it entered the junction."'
     )
     assert [c["chunk_id"] for c in body["citations"]] == [
         chunk_with(db, "Van strikes").id,
         chunk_with(db, "signal was amber").id,
-        chunk_with(db, "Van moves").id,
     ]
     assert body["follow_ups"] == ["Summarise the evidence in this case.", "What happened first?"]
     assert db.scalars(select(AiRun)).all() == []
@@ -343,7 +388,7 @@ def test_ask_returns_a_cited_answer_from_gemini(client, db, case_files, use_gemi
     )
     assert run.output["question"] == "And when did the ambulance arrive?"
     assert run.output["response"]["chunk_ids"] == [ambulance.id, 9999, ambulance.id, amber.id]
-    assert len(run.output["context_chunk_ids"]) == 6
+    assert len(run.output["context_chunk_ids"]) == 4
 
 
 def test_ask_gives_gemini_only_the_top_chunks(client, db, monkeypatch, case_files, use_gemini):

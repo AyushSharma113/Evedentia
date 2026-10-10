@@ -182,12 +182,12 @@ def test_pipeline_stub_marks_evidence_done(db):
     assert evidence.processed_at is not None
 
 
-def test_index_stub_chunks_by_paragraph(db):
+def test_index_chunks_by_page(db):
     case = make_case(db)
     evidence = make_evidence(db, case)
     chunks = index_evidence(db, evidence.id, ["First para.\n\nSecond para.", "Page two."], paged=True)
     db.commit()
-    assert [(c.page, c.text) for c in chunks] == [(1, "First para."), (1, "Second para."), (2, "Page two.")]
+    assert [(c.page, c.text) for c in chunks] == [(1, "First para.\n\nSecond para."), (2, "Page two.")]
     again = index_evidence(db, evidence.id, ["Only one."])
     db.commit()
     assert [(c.page, c.ordinal) for c in again] == [(None, 0)]
