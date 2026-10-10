@@ -117,9 +117,10 @@ def build_content(db: Session, case: Case, template: str, options: ReportOptions
             .order_by(AuditLog.at, AuditLog.id)
         ).all()
 
+    case_out = CaseOut.model_validate(case).model_dump()
     return ReportContent.model_validate(
         {
-            "case": {**CaseOut.model_validate(case).model_dump(), "lead_investigator_name": lead.name if lead else None},
+            "case": {**case_out, "lead_investigator_name": lead.name if lead else None},
             "summary": case.description,
             "evidence": [e for e in evidence if not medical_only or e.type == "medical"],
             "timeline": events if narrative else [],
