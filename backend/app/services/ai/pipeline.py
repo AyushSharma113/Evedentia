@@ -17,6 +17,10 @@ Every Gemini call is logged to ai_runs. Without GEMINI_API_KEY, step 1 reads wha
 it can locally, step 2 still runs and step 3 is skipped, so the evidence ends up
 done with no summary. Any error marks it failed, with the reason in its summary;
 what earlier steps committed (extracted text, chunks, AI run logs) stays.
+
+A run only replaces what it can produce: without Gemini, text an earlier run or
+the seed stored for media and scans is kept, and so is the summary (apart from
+an earlier failure message).
 """
 
 import logging
@@ -37,6 +41,7 @@ from app.services.search.indexing import index_evidence
 
 logger = logging.getLogger(__name__)
 
+FAILURE_PREFIX = "Processing failed: "
 MAX_REASON_LENGTH = 300
 
 
@@ -46,7 +51,8 @@ def process_evidence(evidence_id: int) -> None:
         if evidence is None:
             return
         evidence.processing_status = "processing"
-        evidence.summary = None
+        if evidence.summary and evidence.summary.startswith(FAILURE_PREFIX):
+            evidence.summary = None
         db.commit()
         try:
             run_pipeline(db, evidence)
@@ -57,7 +63,7 @@ def process_evidence(evidence_id: int) -> None:
             if evidence is None:
                 return
             evidence.processing_status = "failed"
-            evidence.summary = f"Processing failed: {failure_reason(exc)}"
+            evidence.summary = FAILURE_PREFIX + failure_reason(exc)
         else:
             evidence.processing_status = "done"
         evidence.processed_at = utcnow()
@@ -74,6 +80,8 @@ def run_pipeline(db: Session, evidence: Evidence) -> None:
 
     client = get_client()
     extraction = extract(path, evidence.mime_type, client)
+    if extraction.incomplete and evidence.extracted_text:
+        return  # Without Gemini this run reads less than an earlier one did.
     for task, output in extraction.runs:
         log_run(db, task, output, evidence_id=evidence.id, case_id=evidence.case_id)
     text = extraction.text

@@ -28,6 +28,7 @@ from app.models import (
 from app.services.ai import calls, pipeline
 from app.services.ai.pipeline import process_evidence
 from app.services.ai.proposals import PassageIndex
+from app.services.search.indexing import index_evidence
 from tests.factories import make_case, make_evidence, make_object, make_person
 
 STATEMENT = """Statement of Anita Desai, recorded 4 October 2026.
@@ -324,6 +325,37 @@ def test_files_needing_gemini_finish_done_without_text(db, filename, mime_type):
     assert chunks_of(db, evidence) == []
 
 
+@pytest.mark.parametrize(
+    ("filename", "data", "mime_type"),
+    [("call.wav", b"RIFF audio", "audio/wav"), ("scan.pdf", pdf_bytes([""]), "application/pdf")],
+)
+def test_reprocessing_without_gemini_keeps_text_it_cannot_read(db, filename, data, mime_type):
+    case = make_case(db)
+    evidence = stored_evidence(
+        db, case, filename, data, mime_type, extracted_text="Caller: a van hit a car.", summary="An emergency call."
+    )
+    [chunk] = index_evidence(db, evidence.id, ["Caller: a van hit a car."])
+    db.commit()
+
+    process_evidence(evidence.id)
+
+    evidence = reload(db, evidence)
+    assert evidence.processing_status == "done"
+    assert (evidence.extracted_text, evidence.summary) == ("Caller: a van hit a car.", "An emergency call.")
+    assert [c.id for c in chunks_of(db, evidence)] == [chunk.id]
+
+
+def test_reprocessing_without_gemini_keeps_the_summary(db):
+    case = make_case(db)
+    evidence = stored_evidence(db, case, "statement.txt", STATEMENT.encode(), "text/plain", summary="A witness account.")
+
+    process_evidence(evidence.id)
+
+    evidence = reload(db, evidence)
+    assert (evidence.processing_status, evidence.summary) == ("done", "A witness account.")
+    assert evidence.extracted_text == STATEMENT
+
+
 def test_evidence_without_a_file_finishes_done(db):
     case = make_case(db)
     evidence = make_evidence(db, case, processing_status="queued", extracted_text="Typed in by hand.")
@@ -510,6 +542,20 @@ def test_images_are_read_with_gemini_ocr(db, gemini):
     assert ocr.contents[0].inline_data.mime_type == "image/jpeg"
     assert ocr.contents[0].inline_data.data == b"jpeg bytes"
     assert [run.task for run in db.scalars(select(AiRun).order_by(AiRun.id))] == ["ocr", "structure"]
+
+
+def test_images_gemini_cannot_read_are_rendered_to_png(db, gemini):
+    case = make_case(db)
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg" width="200" height="80"><text x="10" y="40">KA 01</text></svg>'
+    evidence = stored_evidence(db, case, "photo.svg", svg, "image/svg+xml")
+    client = gemini(text="KA 01")
+
+    process_evidence(evidence.id)
+
+    assert reload(db, evidence).extracted_text == "KA 01"
+    [ocr] = client.plain_calls()
+    assert ocr.contents[0].inline_data.mime_type == "image/png"
+    assert ocr.contents[0].inline_data.data.startswith(b"\x89PNG")
 
 
 @pytest.mark.parametrize(
