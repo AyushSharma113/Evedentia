@@ -164,6 +164,7 @@ def test_create_case_defaults(client):
     assert response.status_code == 201
     body = response.json()
     assert body["case_number"] == f"FX-{body['created_at'][:4]}-0001"
+    assert body["updated_at"] == body["created_at"]
     assert body["description"] == ""
     assert body["incident_at"] is None
     assert body["lead_investigator_id"] is None

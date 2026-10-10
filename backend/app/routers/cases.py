@@ -126,6 +126,8 @@ def create_case(body: CaseCreate, db: DbSession, actor_id: ActorId):
     db.add(case)
     db.flush()
     case.case_number = f"FX-{case.created_at.year}-{case.id:04d}"
+    # Setting the number isn't an edit, so keep updated_at equal to created_at.
+    case.updated_at = case.created_at
     record_audit(db, actor_id, "modified", "case", case.id, case_id=case.id, detail={"created": True})
     db.commit()
     # Reload, so times come back as stored (UTC) rather than as sent.
