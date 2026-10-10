@@ -2,7 +2,15 @@
 
 from sqlalchemy import select
 
-from app.models import AuditLog, EvidenceLink, Reconstruction, ReconstructionStage, SceneAnnotation, SceneObject
+from app.models import (
+    AuditLog,
+    Building,
+    EvidenceLink,
+    Reconstruction,
+    ReconstructionStage,
+    SceneAnnotation,
+    SceneObject,
+)
 from tests.factories import make_case, make_event, make_evidence, make_investigator, make_object
 
 
@@ -355,3 +363,25 @@ def test_annotation_stage_must_belong_to_the_reconstruction(client, db):
 
     assert client.get("/api/reconstructions/999/annotations").status_code == 404
     assert client.post("/api/reconstructions/999/annotations", json={"kind": "note"}).status_code == 404
+
+
+# Buildings ------------------------------------------------------------------
+
+
+def test_get_building(client, db):
+    building = Building(name="Ring Road Plaza", floors=[{"level": 0, "rooms": []}], description="Corner block")
+    db.add(building)
+    db.commit()
+    response = client.get(f"/api/buildings/{building.id}")
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": building.id,
+        "geo_building_id": None,
+        "name": "Ring Road Plaza",
+        "model_url": None,
+        "floors": [{"level": 0, "rooms": []}],
+        "description": "Corner block",
+    }
+    response = client.get("/api/buildings/999")
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Building not found"}

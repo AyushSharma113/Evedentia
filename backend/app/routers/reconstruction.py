@@ -47,7 +47,9 @@ def create_reconstruction(case_id: int, body: ReconstructionCreate, db: DbSessio
     reconstruction = Reconstruction(case_id=case.id, version=1, **body.model_dump())
     db.add(reconstruction)
     db.flush()
-    record_audit(db, actor_id, "modified", "reconstruction", reconstruction.id, case_id=case.id, detail={"created": True})
+    record_audit(
+        db, actor_id, "modified", "reconstruction", reconstruction.id, case_id=case.id, detail={"created": True}
+    )
     db.commit()
     return reconstruction
 
