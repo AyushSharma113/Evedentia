@@ -203,3 +203,9 @@ def test_audit_entry_schema_reads_actor_name(db):
     db.commit()
     entries = [AuditEntry.model_validate(row) for row in db.scalars(select(AuditLog).order_by(AuditLog.id))]
     assert [e.actor_name for e in entries] == ["Insp. Meera Rao", None]
+
+
+def test_gemini_client_is_off_without_a_key():
+    from app.services.ai.client import get_client
+
+    assert get_client() is None
