@@ -3,15 +3,18 @@ get_client in conflicts.py (and in pipeline.py for the end-to-end tests) with a
 fake that answers the conflict call with set findings."""
 
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
 
-from app.models import AiRun, Conflict, EvidenceLink, Observation
+from app.core.storage import save_bytes
+from app.models import AiRun, Conflict, Evidence, EvidenceLink, Observation
 from app.services.ai import conflicts, pipeline
 from app.services.ai.conflicts import Findings, detect_conflicts
+from app.services.ai.pipeline import process_evidence
 from tests.factories import make_case, make_event, make_evidence, make_location, make_object, make_observation
 
 AT = datetime(2026, 10, 3, 16, 10, 10, tzinfo=UTC)
@@ -147,6 +150,105 @@ def test_two_witnesses_who_disagree_open_exactly_one_conflict(db, gemini):
     assert run.evidence_id is None
     assert run.output["observation_ids"] == [amber.id, red.id]
     assert run.output["response"] == {"findings": [conflict([red.id, amber.id])]}
+
+
+def test_a_new_statement_from_the_pipeline_opens_a_conflict_in_the_review_queue_and_alerts(db, client, gemini):
+    case = make_case(db)
+    hatchback = make_object(db, case)
+
+    def statement_output(statement: str, passage: str) -> dict:
+        return {
+            "summary": "A witness describes the hatchback's signal.",
+            "persons": [],
+            "objects": [
+                {
+                    "ref": "O1",
+                    "kind": "vehicle",
+                    "label": "White hatchback",
+                    "plate": "KA-01-AB-1234",
+                    "number": "",
+                    "make": "",
+                    "colour": "White",
+                    "passage": passage,
+                }
+            ],
+            "locations": [],
+            "events": [],
+            "relationships": [],
+            "observations": [
+                {"subject_ref": "O1", "statement": statement, "observed_at": AT.isoformat(), "passage": passage}
+            ],
+        }
+
+    def signal_findings(prompt: str) -> dict:
+        ids = [int(i) for i in re.findall(r"^\[(\d+)\] .*signal", prompt, flags=re.MULTILINE)]
+        return {"findings": [conflict(ids)] if len(ids) > 1 else []}
+
+    fake = gemini(findings=signal_findings)
+
+    desai_text = "Statement of Anita Desai. The hatchback KA 01 AB 1234 entered the junction on amber."
+    desai = stored_statement(db, case, "Desai statement.txt", desai_text)
+    fake.structured = statement_output(AMBER, "The hatchback KA 01 AB 1234 entered the junction on amber.")
+    process_evidence(desai.id)
+    # One statement has nothing to be compared with, so no call is made.
+    assert fake.prompts == []
+    assert conflicts_of(db, case) == []
+
+    singh_text = "Statement of Harpreet Singh. The hatchback's light was already red before it reached the junction."
+    singh = stored_statement(db, case, "Singh statement.txt", singh_text)
+    fake.structured = statement_output(RED, "The hatchback's light was already red before it reached the junction.")
+    process_evidence(singh.id)
+
+    observations = list(db.scalars(select(Observation).where(Observation.case_id == case.id).order_by(Observation.id)))
+    assert [(o.subject_type, o.subject_id, o.statement) for o in observations] == [
+        ("object", hatchback.id, AMBER),
+        ("object", hatchback.id, RED),
+    ]
+    [row] = conflicts_of(db, case)
+    assert row.observation_ids == [o.id for o in observations]
+    assert db.get(Evidence, singh.id).processing_status == "done"
+    assert len(fake.prompts) == 1
+
+    # Reprocessing finds the same statement, so nothing new is asked or opened.
+    process_evidence(singh.id)
+    assert len(fake.prompts) == 1
+    assert len(conflicts_of(db, case)) == 1
+
+    review = client.get(f"/api/cases/{case.id}/conflicts", params={"status": "open"}).json()
+    assert [(c["id"], c["observation_ids"], c["description"]) for c in review] == [
+        (row.id, row.observation_ids, SIGNAL_CONFLICT)
+    ]
+    alerts = client.get("/api/alerts").json()
+    assert f"conflict-{row.id}" in [alert["id"] for alert in alerts]
+
+
+def stored_statement(db, case, filename: str, text: str) -> Evidence:
+    stored = save_bytes(case.id, filename, text.encode())
+    return make_evidence(
+        db,
+        case,
+        type="statement",
+        title=filename,
+        file_path=stored.file_path,
+        size_bytes=stored.size_bytes,
+        sha256=stored.sha256,
+        mime_type="text/plain",
+        processing_status="queued",
+    )
+
+
+def test_a_failed_conflict_call_does_not_fail_the_evidence(db, gemini):
+    case = make_case(db)
+    signal_statements(db, case)
+    fake = gemini(error=RuntimeError("Gemini is down"), structured=NOTHING_STRUCTURED)
+    stored = stored_statement(db, case, "note.txt", "A short note.")
+
+    process_evidence(stored.id)
+
+    assert len(fake.prompts) == 1
+    db.expire_all()
+    assert db.get(Evidence, stored.id).processing_status == "done"
+    assert conflicts_of(db, case) == []
 
 
 # --- Duplicates and re-runs -------------------------------------------------------

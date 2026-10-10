@@ -34,6 +34,7 @@ from app.models import Case, CaseObject, Evidence, Person
 from app.models.base import utcnow
 from app.services.ai.calls import decode_json, log_run
 from app.services.ai.client import get_client
+from app.services.ai.conflicts import detect_conflicts
 from app.services.ai.extract import extract
 from app.services.ai.proposals import PassageIndex, clear_pending_proposals, relink_passages, save_proposals
 from app.services.ai.structure import parse_output, request_structure
@@ -68,6 +69,7 @@ def process_evidence(evidence_id: int) -> None:
             evidence.processing_status = "done"
         evidence.processed_at = utcnow()
         db.commit()
+        detect_conflicts(db, evidence.case_id)
 
 
 def run_pipeline(db: Session, evidence: Evidence) -> None:
