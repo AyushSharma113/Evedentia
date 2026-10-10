@@ -88,9 +88,10 @@ def _follow_ups(candidates: list[str], body: AskRequest) -> list[str]:
 
 
 def _best_sentence(passage: str, question: str) -> str:
-    """The sentence of the passage that contains the most question terms."""
+    """The sentence of the passage that contains the most question terms. A chunk
+    holds several paragraphs, so a paragraph break also ends a sentence."""
     terms = tokens(question)
-    sentences = re.split(r"(?<=[.!?])\s+", passage)
+    sentences = re.split(r"(?<=[.!?])\s+|\n\s*\n", passage)
     best = max(sentences, key=lambda s: sum(1 for t in terms if t in s.lower()), default=passage)
     return best.strip()
 
