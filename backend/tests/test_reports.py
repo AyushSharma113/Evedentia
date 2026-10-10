@@ -103,7 +103,8 @@ def build_case(db):
 
 def post_report(client, case_id, template, actor=None, **options):
     headers = {"X-Investigator-Id": str(actor.id)} if actor else {}
-    return client.post(f"/api/cases/{case_id}/reports", json={"template": template, "options": options}, headers=headers)
+    body = {"template": template, "options": options}
+    return client.post(f"/api/cases/{case_id}/reports", json=body, headers=headers)
 
 
 def test_court_report_fills_every_section(client, db):
