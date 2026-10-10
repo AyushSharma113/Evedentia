@@ -4,17 +4,22 @@ The pipeline (app/services/ai/pipeline.py) calls index_evidence once it has the
 text, with one string per page for PDFs or a single string otherwise. The seed
 calls it too, so the seed case can be searched.
 
-This is the interface stub from the backend foundation: it stores one chunk per
-paragraph without embeddings. Task A2 in docs/BACKEND_TASKS.md replaces the body
-(page-sized chunks, Gemini embeddings as float32 bytes) and keeps the signature.
+With a Gemini key the chunks are embedded here. Without one, or if the call
+fails, they are stored without embeddings: search ranks them by keyword, and
+embeds them on first use once a key is set (see ranking.py).
 """
 
+import logging
 import re
 
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from app.models import EvidenceChunk
+from app.services.ai import client as ai_client
+from app.services.search.embeddings import embed_chunks
+
+logger = logging.getLogger(__name__)
 
 
 def index_evidence(db: Session, evidence_id: int, pages: list[str], *, paged: bool = False) -> list[EvidenceChunk]:
@@ -35,6 +40,13 @@ def index_evidence(db: Session, evidence_id: int, pages: list[str], *, paged: bo
                         text=paragraph,
                     )
                 )
+    client = ai_client.get_client()
+    if client is not None and chunks:
+        try:
+            embed_chunks(client, chunks)
+        except Exception:
+            # Indexing must not fail the pipeline; search embeds these on first use.
+            logger.warning("Embedding evidence %s failed; search embeds it on first use", evidence_id, exc_info=True)
     db.add_all(chunks)
     db.flush()
     return chunks
