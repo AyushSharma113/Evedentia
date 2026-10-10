@@ -7,6 +7,7 @@
 
 from fastapi import APIRouter, status
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.core.deps import ActorId, DbSession
 from app.core.records import RECORD_MODELS, RECORD_NAMES, apply_update, delete_links_to, get_or_404, record_audit
@@ -90,7 +91,7 @@ def get_graph(case_id: int, db: DbSession):
     return CaseGraph(nodes=nodes, edges=edges)
 
 
-def _require_in_case(db: DbSession, case_id: int, end: str, node_type: str, node_id: int) -> None:
+def _require_in_case(db: Session, case_id: int, end: str, node_type: str, node_id: int) -> None:
     row = db.get(RECORD_MODELS[node_type], node_id)
     if row is None or row.case_id != case_id:
         raise invalid(f"{end}_id", f"{RECORD_NAMES[node_type]} {node_id} is not in this case")
@@ -129,7 +130,13 @@ def delete_relationship(relationship_id: int, db: DbSession, actor_id: ActorId) 
     relationship = get_or_404(db, Relationship, relationship_id)
     delete_links_to(db, "relationship", relationship.id)
     record_audit(
-        db, actor_id, "modified", "relationship", relationship.id, case_id=relationship.case_id, detail={"deleted": True}
+        db,
+        actor_id,
+        "modified",
+        "relationship",
+        relationship.id,
+        case_id=relationship.case_id,
+        detail={"deleted": True},
     )
     db.delete(relationship)
     db.commit()
