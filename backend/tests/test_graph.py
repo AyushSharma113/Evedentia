@@ -31,9 +31,8 @@ def make_relationship(db, case, from_node, to_node, **fields) -> Relationship:
 
 
 def audit_rows(db, record_type: str, record_id: int) -> list[AuditLog]:
-    return db.scalars(
-        select(AuditLog).where(AuditLog.record_type == record_type, AuditLog.record_id == record_id).order_by(AuditLog.id)
-    ).all()
+    query = select(AuditLog).where(AuditLog.record_type == record_type, AuditLog.record_id == record_id)
+    return db.scalars(query.order_by(AuditLog.id)).all()
 
 
 # GET /cases/{id}/graph -------------------------------------------------------
@@ -218,7 +217,8 @@ def test_create_relationship_ends_must_be_in_the_case(client, db):
     url = f"/api/cases/{case.id}/relationships"
 
     response = client.post(
-        url, json={"from_type": "person", "from_id": stranger.id, "to_type": "person", "to_id": person.id, "kind": "other"}
+        url,
+        json={"from_type": "person", "from_id": stranger.id, "to_type": "person", "to_id": person.id, "kind": "other"},
     )
     assert response.status_code == 422
     assert response.json()["detail"][0]["loc"] == ["body", "from_id"]
