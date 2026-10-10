@@ -120,6 +120,14 @@ def test_every_stored_file_matches_its_hash(seeded):
         assert absolute_path(item.file_path).stat().st_size == item.size_bytes
 
 
+def test_verify_passes_for_every_case(seeded, client):
+    for case_id, evidence_count in [(1, 8), (2, 2), (3, 1), (4, 1)]:
+        response = client.post(f"/api/cases/{case_id}/verify", headers={"X-Investigator-Id": "1"})
+        assert response.status_code == 200
+        assert response.json()["checked"] == evidence_count
+        assert response.json()["mismatches"] == []
+
+
 def test_files_are_real_and_match_their_type(seeded):
     for item in seeded.scalars(select(Evidence)):
         data = absolute_path(item.file_path).read_bytes()
