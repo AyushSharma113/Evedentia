@@ -160,7 +160,9 @@ def get_evidence_file(
 def reprocess_evidence(evidence_id: int, background_tasks: BackgroundTasks, db: DbSession, actor_id: ActorId):
     evidence = get_or_404(db, Evidence, evidence_id)
     evidence.processing_status = "queued"
-    record_audit(db, actor_id, "modified", "evidence", evidence.id, case_id=evidence.case_id, detail={"reprocess": True})
+    record_audit(
+        db, actor_id, "modified", "evidence", evidence.id, case_id=evidence.case_id, detail={"reprocess": True}
+    )
     db.commit()
     background_tasks.add_task(process_evidence, evidence.id)
     return evidence
