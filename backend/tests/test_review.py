@@ -17,9 +17,8 @@ def make_conflict(db, case, **fields) -> Conflict:
 
 
 def audit_rows(db, record_type: str, record_id: int) -> list[AuditLog]:
-    return db.scalars(
-        select(AuditLog).where(AuditLog.record_type == record_type, AuditLog.record_id == record_id).order_by(AuditLog.id)
-    ).all()
+    query = select(AuditLog).where(AuditLog.record_type == record_type, AuditLog.record_id == record_id)
+    return db.scalars(query.order_by(AuditLog.id)).all()
 
 
 # Observations ------------------------------------------------------------------

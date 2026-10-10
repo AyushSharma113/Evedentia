@@ -5,6 +5,7 @@
 """
 
 from fastapi import APIRouter, status
+from sqlalchemy.orm import Session
 
 from app.core.deps import ActorId, DbSession
 from app.core.records import apply_update, get_or_404, record_audit
@@ -17,7 +18,7 @@ from app.services.timeline.validation import invalid, reject_nulls
 router = APIRouter(tags=["timeline"])
 
 
-def _require_location(db: DbSession, case_id: int, location_id: int) -> None:
+def _require_location(db: Session, case_id: int, location_id: int) -> None:
     location = db.get(Location, location_id)
     if location is None or location.case_id != case_id:
         raise invalid("location_id", f"Location {location_id} is not in this case")
